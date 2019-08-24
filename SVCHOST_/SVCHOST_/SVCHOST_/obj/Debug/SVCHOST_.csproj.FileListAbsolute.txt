@@ -1,0 +1,6 @@
+C:\WebEst\SVCHOST_\SVCHOST_\SVCHOST_\bin\Debug\SVCHOST_.exe.config
+C:\WebEst\SVCHOST_\SVCHOST_\SVCHOST_\bin\Debug\SVCHOST_.exe
+C:\WebEst\SVCHOST_\SVCHOST_\SVCHOST_\bin\Debug\SVCHOST_.pdb
+C:\WebEst\SVCHOST_\SVCHOST_\SVCHOST_\obj\Debug\SVCHOST_.exe
+C:\WebEst\SVCHOST_\SVCHOST_\SVCHOST_\obj\Debug\SVCHOST_.pdb
+C:\WebEst\SVCHOST_\SVCHOST_\SVCHOST_\obj\Debug\SVCHOST_.csprojResolveAssemblyReference.cache

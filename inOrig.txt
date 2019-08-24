@@ -1,0 +1,1527 @@
+using System;
+using System.Collections.Generic;
+using System.Configuration;
+using System.Data;
+using System.Data.SqlClient;
+using System.Diagnostics;
+using System.Globalization;
+using System.Linq;
+using System.Security.Cryptography;
+using System.Text;
+using System.Threading;
+using System.Threading.Tasks;
+using System.Web;
+using ProEstimator.Business.Extension;
+using ProEstimator.Business.Logic.Admin;
+using ProEstimator.Business.Model.Admin;
+using ProEstimator.Business.Model.Admin.Reports;
+using ProEstimator.Business.Type;
+using ProEstimatorData;
+
+namespace ProEstimator.Business.Logic
+{
+    public class PartAutomationService
+    {
+        private readonly DBAccess _data;
+        private readonly TextMessageService _smsService;
+        private readonly NewUserSignupService _signUpService;
+        private readonly string SERVER = ConfigurationManager.AppSettings["server"];
+
+        public PartAutomationService()
+        {
+            _data = new DBAccess();
+            _smsService = new TextMessageService();
+            _signUpService = new NewUserSignupService();
+        }
+
+        public DataSet GetUser(string criteria, string loginId, string estimateID, string email)
+        {
+            var result = new DataSet();
+            var parameters = new List<SqlParameter>();
+            parameters.Add(new SqlParameter("SearchName", string.IsNullOrEmpty(criteria) ? null : criteria));
+            parameters.Add(new SqlParameter("SearchLoginID", loginId));
+            parameters.Add(new SqlParameter("EstimateID", estimateID));
+            parameters.Add(new SqlParameter("EmailAddress", email));
+
+            var item = _data.ExecuteWithTable(AdminConstants.GET_USER, parameters);
+            if (item != null && item.DataTable != null)
+            {
+                item.DataTable.TableName = AdminConstants.USER_INFO_TABLE;
+                result.Tables.Add(item.DataTable);
+            }
+
+            return result;
+        }
+
+        public DataSet GetUserInfo(string loginId)
+        {
+            var result = new DataSet();
+            var parameters = new List<SqlParameter>();
+            parameters.Add(new SqlParameter("LoginsID", loginId));
+
+            var item = _data.ExecuteWithTable(AdminConstants.GET_USER_INFO, parameters);
+            if (item != null && item.DataTable != null)
+            {
+                item.DataTable.TableName = AdminConstants.NO_OF_LOGINS_TABLE;
+                result.Tables.Add(item.DataTable);
+            }
+
+            return result;
+        }
+
+        public DataSet GetNumberOfLoginsDS(string loginId)
+        {
+            var result = new DataSet();
+            var parameters = new List<SqlParameter>();
+            parameters.Add(new SqlParameter("LoginId", loginId));
+
+            var item = _data.ExecuteWithTable(AdminConstants.GET_NUMBER_OF_LOGINS, parameters);
+            if (item != null && item.DataTable != null)
+            {
+                item.DataTable.TableName = AdminConstants.USER_INFO_TABLE;
+                result.Tables.Add(item.DataTable);
+            }
+
+            return result;
+        }
+
+        public DataSet GetContractDs(string loginId)
+        {
+            var result = new DataSet();
+            var parameters = new List<SqlParameter>();
+            parameters.Add(new SqlParameter("LoginID", loginId));
+
+            var item = _data.ExecuteWithTable(AdminConstants.GET_CONTRACT, parameters);
+            if (item != null && item.DataTable != null)
+            {
+                item.DataTable.TableName = AdminConstants.CONTRACT_TABLE;
+                result.Tables.Add(item.DataTable);
+            }
+
+            return result;
+        }
+
+        public List<VmUserMaintenance> GetUserModels(string criteria, string loginId, string estimateId, string email)
+        {
+            var dataSet = GetUser(criteria, loginId, estimateId, email);
+            var result = (from DataRow row in dataSet.Tables[0].Rows select row.ToModel<VmUserMaintenance>()).ToList();
+
+            if (string.IsNullOrEmpty(criteria) &&
+                string.IsNullOrEmpty(loginId) &&
+                string.IsNullOrEmpty(estimateId) &&
+                string.IsNullOrEmpty(email))
+            {
+                result = result.OrderByDescending(item => item.Id).ToList();
+            }
+
+            return result;
+        }
+
+        public List<VmUserMaintenanceEdit> GetUserEditModels(string loginId)
+        {
+            var result = new List<VmUserMaintenanceEdit>();
+            var dataSet = GetUserInfo(loginId);
+            result = (from DataRow row in dataSet.Tables[0].Rows select row.ToModel<VmUserMaintenanceEdit>()).ToList();
+            foreach (var item in result)
+            {
+                item.NumberOfLogins = GetNumberOfLogins(loginId);
+                item.ContractId = GetContract(loginId);
+            }
+
+            return result;
+        }
+
+        public int GetNumberOfLogins(string loginId)
+        {
+            var result = 0;
+            var ds = GetNumberOfLoginsDS(loginId);
+            if (ds != null)
+            {
+                result = Convert.ToInt32(ds.Tables[0].Rows[0].ItemArray[0].ToString());
+            }
+
+            return result;
+        }
+
+        public string GetContract(string loginId)
+        {
+            var result = string.Empty;
+            var ds = GetContractDs(loginId);
+            if (ds != null)
+            {
+                result = Convert.ToString(ds.Tables[0].Rows[0]["ContractID"]);
+            }
+
+            return result;
+        }
+
+        public string GetRandomPassword()
+        {
+            string result = null;
+            while (result == null)
+            {
+                const string sample = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890!@#$%^&*()";
+                var list = new List<string>();
+                list.AddRange(sample.Select(item => item.ToString()));
+                var random = list.OrderBy(item => Guid.NewGuid()).Take(10);
+                var enumerable = random as IList<string> ?? random.ToList();
+                
+                if (PasswordRules(enumerable))
+                {
+                    result = String.Join(string.Empty, enumerable);
+                }
+            }
+
+            return result;
+        }
+
+        private static bool PasswordRules(IList<string> enumerable)
+        {
+            int myInt;
+            return (enumerable.Any(x => Char.IsUpper(Convert.ToChar(x))) &&
+                    enumerable.Any(x => int.TryParse(x, out myInt)) ||
+                   (enumerable.Any(x => Char.IsUpper(Convert.ToChar(x))) &&
+                    enumerable.Any(x => !Char.IsLetterOrDigit(Convert.ToChar(x)))) ||
+                   (enumerable.Any(x => !Char.IsLetterOrDigit(Convert.ToChar(x))) &&
+                    enumerable.Any(x => int.TryParse(x, out myInt)))) &&
+                    enumerable.Any(x => Char.IsLower(Convert.ToChar(x)));
+        }
+
+        public List<VmUserMaintenanceEdit> Extend(int days, string contractId, string loginId, int? salesRepId)
+        {
+            var parameters = new List<SqlParameter>();
+            parameters.Add(new SqlParameter("ContractID", contractId));
+            parameters.Add(new SqlParameter("Days", days));
+            parameters.Add(new SqlParameter("login", loginId));
+            parameters.Add(new SqlParameter("user", salesRepId));
+
+            _data.ExecuteNonQuery(AdminConstants.EXTEND_CONTRACT, parameters);
+            return GetUserEditModels(loginId);
+        }
+
+        public VmImpersonate Impersonate(int loginId, string organization, string password)
+        {
+            var result = new VmImpersonate();
+            result.LoginName = Encrypt(loginId);
+            result.Password = password;
+            result.Organization = organization;
+            result.Server = SERVER;
+
+            return result;
+        }
+
+        private string Encrypt(int item)
+        {
+            var result = string.Empty;
+            result = Encryptor.Encrypt(item.ToString());
+            result = HttpUtility.UrlEncode(result);
+
+            return result;
+        }
+
+        public VmCreateOrg GetOrganization(string organization)
+        {
+            VmCreateOrg result = null;
+            var parameters = new List<SqlParameter>();
+            parameters.Add(new SqlParameter("companyName", organization ?? string.Empty));
+
+            var item = _data.ExecuteWithTable(AdminConstants.GET_ORG_SINGLE, parameters);
+            if (item != null && item.DataTable != null)
+            {
+                var ds = new DataSet();
+                ds.Tables.Add(item.DataTable);
+                return (from DataRow row in ds.Tables[0].Rows select row.ToModel<VmCreateOrg>()).FirstOrDefault();
+            }
+
+            return result;
+        }
+
+        public List<VmOrganizationSearchResult> SearchOrganizations(string organization)
+        {
+            var result = new List<VmOrganizationSearchResult>();
+            var parameters = new List<SqlParameter>();
+            parameters.Add(new SqlParameter("SearchName", organization ?? string.Empty));
+
+            var item = _data.ExecuteWithTable(AdminConstants.ORG_SEARCH, parameters);
+            if (item != null && item.DataTable != null)
+            {
+                var ds = new DataSet();
+                ds.Tables.Add(item.DataTable);
+                return (from DataRow row in ds.Tables[0].Rows select row.ToModel<VmOrganizationSearchResult>()).ToList();
+            }
+
+            return result;
+        }
+
+        public VmStandardResult<VmCreateOrg> CreateOrganization(string organization, string loginId, string expireDate)
+        {
+            var result = new VmStandardResult<VmCreateOrg>();
+            VmCreateOrg model = null;
+            var parameters = new List<SqlParameter>();
+            parameters.Add(new SqlParameter("LoginsID", loginId));
+            parameters.Add(new SqlParameter("Organization", organization));
+            parameters.Add(new SqlParameter("OrgID", -1));
+
+            var prelim = GetOrganization(organization);
+            if (prelim != null)
+            {
+                result.Status = false;
+                result.Payload = prelim;
+                result.Message =
+                    string.Format(
+                        "The organization has not been created due to an error. There is an existing organization with the name {1} and ID {0}",
+                        prelim.OrgId, prelim.CompanyName);
+
+                return result;
+            }
+
+            var item = _data.ExecuteWithTable(AdminConstants.ORG_CREATE, parameters);
+            UpdateOrganizationContract(expireDate, loginId);
+            if (item != null && item.DataTable != null)
+            {
+                var ds = new DataSet();
+                ds.Tables.Add(item.DataTable);
+                model = (from DataRow row in ds.Tables[0].Rows select row.ToModel<VmCreateOrg>()).FirstOrDefault();
+            }
+
+            if (model != null)
+            {
+                result.Status = true;
+                result.Payload = model;
+                result.Message =
+                    "The organization has been created.  You should complete the information for it on the Org Maintenance screen.     ";
+            }
+            else
+            {
+                result.Status = false;
+                result.Message = "The organization was not created due to an error.  Please contact the programmer.";
+            }
+
+            return result;
+        }
+
+        private string GetOrgMaintLink(decimal orgId)
+        {
+            return "<a href=\"/#/salesRep/org-maitenance/" + orgId + "\">Edit Org</a>";
+        }
+
+        
+
+        public List<VmCustomerSearch> SearchCustomer(string loginId, string loginName, string companyOrg,
+            string firstName, string lastName)
+        {
+            var dataSet = new DataSet();
+            var parameters = new List<SqlParameter>();
+            parameters.Add(new SqlParameter("LoginID", string.IsNullOrEmpty(loginId) ? null : loginId));
+            parameters.Add(new SqlParameter("LoginName", loginName));
+            parameters.Add(new SqlParameter("CompanyName", companyOrg));
+            parameters.Add(new SqlParameter("FirstName", firstName));
+            parameters.Add(new SqlParameter("LastName", lastName));
+
+            var item = _data.ExecuteWithTable(AdminConstants.GET_CUSTOMER_CONTACTS, parameters);
+            if (item != null && item.DataTable != null)
+            {
+                dataSet.Tables.Add(item.DataTable);
+            }
+
+            return (from DataRow row in dataSet.Tables[0].Rows select row.ToModel<VmCustomerSearch>()).ToList();
+        }
+
+        public List<VmUserMaintenanceEdit> CreateUser(VmUserMaintenanceEdit model)
+        {
+            model = CommitUser(model);
+
+            if (model.OrgId == 0)
+            {
+                model.Organization = model.LoginOrg;
+                model.LoginId = model.UserId;
+                var orgResult = CreateOrganization(model.Organization, model.LoginId.ToString(), model.ExpireDate);
+                model.OrgId = (int) orgResult.Payload.OrgId;
+                model = CommitUser(model);
+            }
+
+            return new List<VmUserMaintenanceEdit>
+            {
+                model
+            };
+        }
+
+        private VmUserMaintenanceEdit CommitUser(VmUserMaintenanceEdit model)
+        {
+            if (model.OrgId != 0)
+            {
+                model = StageDataForNewOrg(model);
+            }
+
+            var parameters = new List<SqlParameter>();
+            parameters.Add(new SqlParameter("OrgID", model.OrgId));
+            parameters.Add(new SqlParameter("LoginName", model.LoginName));
+            parameters.Add(new SqlParameter("LoginOrg", model.LoginOrg));
+            parameters.Add(new SqlParameter("PasswordExpired", model.PasswordExpired));
+            parameters.Add(new SqlParameter("ExpireDate", FormatExpireDate(model.ExpireDate)));
+            parameters.Add(new SqlParameter("AccountDisabled", model.AccountDisabled));
+            parameters.Add(new SqlParameter("DoubtfulAccount", model.DoubtfulAccount));
+            parameters.Add(new SqlParameter("StaffAccount", model.StaffAccount));
+            parameters.Add(new SqlParameter("First", model.FirstName));
+            parameters.Add(new SqlParameter("Middle", model.MiddleName));
+            parameters.Add(new SqlParameter("Last", model.LastName));
+            parameters.Add(new SqlParameter("Password", model.Password));
+            parameters.Add(new SqlParameter("EncPassword", GetEncryptedPassword(model.Password)));
+            parameters.Add(new SqlParameter("JobTitle", model.JobTitle));
+            parameters.Add(new SqlParameter("EmailAddress", model.EmailAddress));
+            parameters.Add(new SqlParameter("Phone1", model.PhoneNumber1));
+            parameters.Add(new SqlParameter("PhoneNumberType1", model.PhoneNumber1Type != null ? model.PhoneNumber1Type.Type : string.Empty));
+            parameters.Add(new SqlParameter("Phone2", model.PhoneNumber2));
+            parameters.Add(new SqlParameter("FaxNumber", model.FaxNumber));
+            parameters.Add(new SqlParameter("PhoneNumberType2", model.PhoneNumber2Type != null ? model.PhoneNumber2Type.Type : string.Empty));
+            parameters.Add(new SqlParameter("LoginsID", model.LoginId));
+            parameters.Add(new SqlParameter("SalesRepID", model.SalesRepId));
+            parameters.Add(new SqlParameter("TechSuppPass", model.TechSupportPassword));
+            parameters.Add(new SqlParameter("Appraiser", model.AppraiserAccount));
+            parameters.Add(new SqlParameter("CompanyOrigin", model.CompanyOrigin));
+            parameters.Add(new SqlParameter("NoOfLogins", model.NumberOfLogins));
+            parameters.Add(new SqlParameter("ResellerID", model.ResellerId));
+
+            var item = _data.ExecuteWithTable(model.LoginId == -1 ? AdminConstants.INSERT_USER : AdminConstants.UPDATE_USER, parameters);
+            if (item != null && item.DataTable != null)
+            {
+                model.UserId = (int) item.DataTable.Rows[0][1];
+            }
+
+            return model;
+        }
+
+        private string FormatExpireDate(string expireDate)
+        {
+            var result = string.Empty;
+            DateTime myDate;
+            if (DateTime.TryParse(expireDate, out myDate))
+            {
+                result =
+                    new DateTime(myDate.Year, myDate.Month, myDate.Day, 23, 59, 59).ToString(
+                        CultureInfo.InvariantCulture);
+            }
+
+            return result;
+        }
+
+        private VmUserMaintenanceEdit StageDataForNewOrg(VmUserMaintenanceEdit model)
+        {
+            if (string.IsNullOrEmpty(model.LoginName))
+            {
+                model.LoginName = string.Empty;
+            }
+
+            return model;
+        }
+
+        private string GetEncryptedPassword(string password)
+        {
+            var result = string.Empty;
+            if (!string.IsNullOrEmpty(password))
+            {
+                var bytes = new UnicodeEncoding().GetBytes(password);
+                var hash = new MD5CryptoServiceProvider().ComputeHash(bytes);
+
+                result = BitConverter.ToString(hash);
+            }
+
+            return result;
+        }
+
+        public List<VmOrganizationEdit> GetOrganizationModel(string orgId)
+        {
+            var dataSet = new DataSet();
+            var parameters = new List<SqlParameter>();
+            parameters.Add(new SqlParameter("orgId", orgId));
+
+            var item = _data.ExecuteWithTable(AdminConstants.GET_ORG, parameters);
+            if (item != null && item.DataTable != null)
+            {
+                item.DataTable.TableName = AdminConstants.NO_OF_LOGINS_TABLE;
+                dataSet.Tables.Add(item.DataTable);
+            }
+
+            return (from DataRow row in dataSet.Tables[0].Rows select row.ToModel<VmOrganizationEdit>()).ToList();
+        }
+
+        public VmOrganizationEdit SaveOrganization(VmOrganizationEdit model)
+        {
+            var parameters = new List<SqlParameter>();
+            parameters.Add(new SqlParameter("OrganizationID", model.ID));
+            parameters.Add(new SqlParameter("Organization", model.CompanyName));
+            parameters.Add(new SqlParameter("Address1", model.Address1));
+            parameters.Add(new SqlParameter("Address2", model.Address2));
+            parameters.Add(new SqlParameter("City", model.City));
+            parameters.Add(new SqlParameter("State", model.State));
+            parameters.Add(new SqlParameter("ZipCode", model.Zip));
+            parameters.Add(new SqlParameter("PhoneNumberType1", model.Phone1Type));
+            parameters.Add(new SqlParameter("Phone1", model.Phone1));
+            parameters.Add(new SqlParameter("PhoneNumberType2", model.Phone2Type));
+            parameters.Add(new SqlParameter("Phone2", model.Phone2));
+            parameters.Add(new SqlParameter("PhoneNumberType3", model.Phone3Type));
+            parameters.Add(new SqlParameter("Phone3", model.Phone3));
+            parameters.Add(new SqlParameter("FaxNumber", model.FaxNumber));
+            parameters.Add(new SqlParameter("EmailAddress", model.Email));
+            parameters.Add(new SqlParameter("CompanyType", model.CompanyType));
+            parameters.Add(new SqlParameter("FederalTaxID", model.FederalTaxId));
+            parameters.Add(new SqlParameter("LicenseNumber", model.LicenseId));
+            parameters.Add(new SqlParameter("BarNumber", model.BarNumber));
+            parameters.Add(new SqlParameter("First", model.FirstName));
+
+
+                        
+            parameters.Add(new SqlParameter("Middle", model.MiddleName));
+            parameters.Add(new SqlParameter("Last", model.LastName));
+            parameters.Add(new SqlParameter("PaidContract", model.PaidContract));
+            parameters.Add(new SqlParameter("AccountDisabled", model.Disabled));
+            parameters.Add(new SqlParameter("ExpireDate", string.IsNullOrEmpty(model.ExpireDate) ? null : SubtractHours(model.ExpireDate, 1)));
+            parameters.Add(new SqlParameter("GraphicsExpireDate", string.IsNullOrEmpty(model.GraphicsExpireDate) ? null : model.GraphicsExpireDate));
+            parameters.Add(new SqlParameter("ManualExpireDate", string.IsNullOrEmpty(model.ManualEntryExpireDate) ? null : model.ManualEntryExpireDate));
+            parameters.Add(new SqlParameter("CustomerNumber", model.CustomerNumber));
+            parameters.Add(new SqlParameter("RegistrationNumber", model.RegistrationId));
+            parameters.Add(new SqlParameter("ShowRepairShopProfiles", model.ShowRepair));
+            parameters.Add(new SqlParameter("AllowAlternateIdentities", model.AllowAlternate));
+            parameters.Add(new SqlParameter("AllowRWofInspAssignDates", model.AllowEditing));
+            parameters.Add(new SqlParameter("Appraiser", model.ShowAppraiser));
+            parameters.Add(new SqlParameter("lastestimatenumber", model.EstimateId));
+            parameters.Add(new SqlParameter("DelPWRequired", model.PasswordRequired ?? false));
+            parameters.Add(new SqlParameter("ProfileLocked", model.ProfileLocked ?? false));
+            parameters.Add(new SqlParameter("DelPW", model.DelPassword ?? string.Empty));
+
+            var item = _data.ExecuteWithTable(AdminConstants.UPDATE_ORG, parameters);
+            if (item != null && item.DataTable != null)
+            {
+                model.ID = (int) item.DataTable.Rows[0][0];
+            }
+
+            return model;
+        }
+
+        private string SubtractHours(string date, int hours)
+        {
+            var result = string.Empty;
+            DateTime myDate;
+            if (DateTime.TryParse(date, out myDate))
+            {
+                result = myDate.Subtract(new TimeSpan(hours, 0, 0)).ToString(CultureInfo.InvariantCulture);
+            }
+
+            return result;
+        }
+
+        public VmUserMaintenanceEdit UpdateOrganizationContact(VmUserMaintenanceEdit model)
+        {
+            var existingOrg = GetOrganizationModel(model.OrgId.ToString());
+            if (existingOrg != null &&
+                existingOrg.Any())
+            {
+                existingOrg[0].FirstName = model.FirstName;
+                existingOrg[0].MiddleName = model.MiddleName;
+                existingOrg[0].LastName = model.LastName;
+                existingOrg[0].Email = model.EmailAddress;
+                existingOrg[0].Phone1Type = model.PhoneNumber1Type != null ? model.PhoneNumber1Type.Type : string.Empty;
+                existingOrg[0].Phone2Type = model.PhoneNumber2Type != null ? model.PhoneNumber2Type.Type : string.Empty;
+                existingOrg[0].Phone1 = model.PhoneNumber1;
+                existingOrg[0].Phone2 = model.PhoneNumber2;
+                existingOrg[0].FaxNumber = model.FaxNumber;
+                SaveOrganization(existingOrg[0]);
+            }
+
+            return model;
+        }
+
+        public string UpdateOrganizationContract(string expireDate, string loginId)
+        {
+            var result = string.Empty;
+            var parameters = new List<SqlParameter>();
+            parameters.Add(new SqlParameter("expireDate",
+                string.IsNullOrEmpty(expireDate) ? null : SubtractHours(expireDate, 1)));
+            parameters.Add(new SqlParameter("loginId", loginId));
+
+            var item = _data.ExecuteWithTable(AdminConstants.UPDATE_CONTRACT, parameters);
+            if (item != null && item.DataTable != null)
+            {
+                result = (string) item.DataTable.Rows[0][0];
+            }
+
+            return result;
+        }
+
+        public VmInvoice GetInvoice(string loginId, string contractId)
+        {
+            var result = new VmInvoice();
+            var dataSet = new DataSet();
+            var dataSet1 = new DataSet();
+            var parameters = new List<SqlParameter>();
+
+            if (!string.IsNullOrEmpty(loginId))
+            {
+                parameters.Add(new SqlParameter("LoginID", loginId));
+            }
+            if (!string.IsNullOrEmpty(contractId))
+            {
+                parameters.Add(new SqlParameter("ContractID", contractId));
+            }
+
+            var item = _data.ExecuteWithTable(AdminConstants.GET_CONTRACT, parameters);
+            if (item != null && item.DataTable != null)
+            {
+                item.DataTable.TableName = AdminConstants.NO_OF_LOGINS_TABLE;
+                dataSet.Tables.Add(item.DataTable);
+            }
+
+            result = (from DataRow row in dataSet.Tables[0].Rows select row.ToModel<VmInvoice>()).FirstOrDefault();
+            
+            if (result != null)
+            {
+                result.SelectedContractId = contractId;
+                var addOns = CheckAddons(loginId, result.ContractId);
+                result.HasFrameDataContract = addOns.HasFrameDataContract;
+                result.HasEMSContract = addOns.HasEMSContract;
+
+                if (result.PriceLevel >= 0)
+                {
+                    result.Details = GetInvoiceDetails(result.ContractId, null, false, AddonType.FrameData);
+                }
+                result.Logins = GetLogins(result.ContractId);
+                result.Contracts = GetFrameDataContracts(loginId);
+                result.FrameDataDetails = GetAddonDetails(result, loginId, AddonType.FrameData);
+                result.Ems = GetAddonDetails(result, loginId, AddonType.Ems);
+                result.Custom = GetAddonDetails(result, loginId, AddonType.Custom);
+            }
+
+            // get stripe record
+            parameters = new List<SqlParameter>();
+            parameters.Add(new SqlParameter("@loginId", loginId));
+            var stripe = _data.ExecuteWithTable(AdminConstants.GetStripeAuto, parameters);
+            if (stripe != null && stripe.DataTable != null)
+            {
+                dataSet1.Tables.Add(stripe.DataTable);
+            }
+
+            var vmStripe = (from DataRow row in dataSet1.Tables[0].Rows select row.ToModel<VmStripe>()).FirstOrDefault();
+            if (vmStripe != null && vmStripe.AutoPay != null && result != null)
+            {
+                result.AutoPay = (bool) vmStripe.AutoPay;
+            }
+            else // if no stripe record exists, set autopay to false in the UI
+            {
+                result.AutoPay = false;
+            }
+
+            return result;
+        }
+
+        private VmAddOnResult GetAddonDetails(VmInvoice item, string loginId, AddonType type)
+        {
+            var result = new VmAddOnResult();
+            var prelim = new VmAddOnResult();
+            foreach (var contract in item.Contracts.Where(contract => contract.NewestContract))
+            {
+                prelim.NewestContractId = contract.ContractId;
+                prelim.EffectiveDate = contract.EffectiveDate;
+
+                if (contract.TrialContract)
+                {
+                    prelim.Trial = true;
+                }
+            }
+
+            if (type == AddonType.Ems && item.ContractId != null)
+            {
+                result = item.ContractId != prelim.NewestContractId
+                    ? GetContract_AddOn_Result(5, prelim.NewestContractId, 0, loginId)
+                    : GetContract_AddOn_Result(5, (int) item.ContractId, 0, loginId);
+            }
+            else if (type == AddonType.FrameData && item.ContractId != null)
+            {
+                result = item.ContractId != prelim.NewestContractId
+                    ? GetContract_AddOn_Result(2, prelim.NewestContractId, 0, loginId)
+                    : GetContract_AddOn_Result(2, (int) item.ContractId, 0, loginId);
+            }
+
+            if (result != null &&
+                result.ContractActive != null &&
+                type != AddonType.Custom &&
+                (result.AllowReactivation || (!result.AllowReactivation && (bool) result.ContractActive)))
+            {
+                result.NewestContractId = prelim.NewestContractId;
+                result.EffectiveDate = prelim.EffectiveDate;
+                result.Trial = prelim.Trial;
+
+                decimal myNextInvoiceAmount;
+                if (decimal.TryParse(result.NextInvoiceAmount, out myNextInvoiceAmount) && myNextInvoiceAmount <= 0)
+                {
+                    result.NextInvoiceAmount = "Paid";
+                    result.NextInvoiceDueDate = "Paid";
+                }
+
+                if (type == AddonType.Ems)
+                {
+                    result.Details = GetInvoiceDetails(result.ContractId, null, false, AddonType.Ems);
+                }
+                else if (type == AddonType.FrameData)
+                {
+                    result.Details = GetInvoiceDetails(result.ContractId, null, false, AddonType.FrameData);
+                }
+
+                result.DisplayPayAll = result.Details.Count > 0;
+
+            }
+            else
+            {
+                result = new VmAddOnResult {Details = new List<VmInvoiceRow>()};
+            }
+
+            if (type == AddonType.Custom)
+            {
+                result.Details = GetInvoiceDetails(null, loginId, false, AddonType.Custom);
+                result.DisplayPayAll = result.Details.Count > 0 && result.Details.Any(detail => detail.Status == false);
+            }
+
+            return result;
+        }
+
+        private List<VmFrameDataContract> GetFrameDataContracts(string loginId)
+        {
+            var result = new List<VmFrameDataContract>();
+            var parameters = new List<SqlParameter>();
+            parameters.Add(new SqlParameter("LoginID", loginId));
+
+            var item = _data.ExecuteWithTable(AdminConstants.GetContracts, parameters);
+            if (item != null && item.DataTable != null)
+            {
+                var ds = new DataSet();
+                ds.Tables.Add(item.DataTable);
+                result = (from DataRow row in ds.Tables[0].Rows select row.ToModel<VmFrameDataContract>()).ToList();
+            }
+
+            return result;
+        }
+
+        private List<VmContractLogin> GetLogins(int? contractLoginId)
+        {
+            var parameters = new List<SqlParameter>();
+            var dataSet = new DataSet();
+            parameters.Add(new SqlParameter("ContractID", contractLoginId));
+
+            var item = _data.ExecuteWithTable(AdminConstants.GetContractLogins, parameters);
+            if (item != null && item.DataTable != null)
+            {
+                item.DataTable.TableName = AdminConstants.NO_OF_LOGINS_TABLE;
+                dataSet.Tables.Add(item.DataTable);
+            }
+
+            return (from DataRow row in dataSet.Tables[0].Rows select row.ToModel<VmContractLogin>()).ToList();
+        }
+
+        private List<VmInvoiceRow> GetInvoiceDetails(int? contractId, string loginId, bool includeOnlyActiveContractInvoices, AddonType type)
+        {
+            var parameters = new List<SqlParameter>();
+            var dataSet = new DataSet();
+            if (type == AddonType.Custom)
+            {
+                parameters.Add(new SqlParameter("LoginID", loginId));
+                parameters.Add(new SqlParameter("InvoiceTypeID", 3));
+            }
+            else
+            {
+                parameters.Add(new SqlParameter("ContractID", contractId));
+                parameters.Add(new SqlParameter("IncludeOnlyActiveContractInvoices", includeOnlyActiveContractInvoices));
+            }
+
+            var item = _data.ExecuteWithTable(AdminConstants.GetInvoices, parameters);
+            if (item != null && item.DataTable != null)
+            {
+                item.DataTable.TableName = AdminConstants.NO_OF_LOGINS_TABLE;
+                dataSet.Tables.Add(item.DataTable);
+            }
+
+            return (from DataRow row in dataSet.Tables[0].Rows select row.ToModel<VmInvoiceRow>()).ToList();
+        }
+
+        private VmAddOn CheckAddons(string loginId, int? contractId)
+        {
+            var parameters = new List<SqlParameter>();
+            var dataSet = new DataSet();
+            parameters.Add(new SqlParameter("LoginID", loginId));
+            parameters.Add(new SqlParameter("ContractID", contractId));
+
+            var item = _data.ExecuteWithTable(AdminConstants.CheckContract, parameters);
+            if (item != null && item.DataTable != null)
+            {
+                item.DataTable.TableName = AdminConstants.NO_OF_LOGINS_TABLE;
+                dataSet.Tables.Add(item.DataTable);
+            }
+
+            return (from DataRow row in dataSet.Tables[0].Rows select row.ToModel<VmAddOn>()).FirstOrDefault();
+        }
+
+        
+
+        public void PayAllInvoices(bool action, int contractId, int salesRepId)
+        {
+            var parameters = new List<SqlParameter>();
+            parameters.Add(new SqlParameter("Debug", 0));
+            parameters.Add(new SqlParameter("SalesRepID", salesRepId));
+            parameters.Add(new SqlParameter("ContractID", contractId)); 
+            parameters.Add(new SqlParameter("isAutoPay", action));
+
+            _data.ExecuteNonQuery(AdminConstants.UpdateContract_AutoPay, parameters);
+        }
+
+        public void AcceptEChecks(bool action, int contractId)
+        {
+            var parameters = new List<SqlParameter>();
+            parameters.Add(new SqlParameter("acceptEChecks", action));
+            parameters.Add(new SqlParameter("ContractID", contractId));
+
+            _data.ExecuteNonQuery(AdminConstants.UpdateContract_AcceptEChecks, parameters);
+        }
+
+        public void SignContract(bool action, int contractId)
+        {
+            var parameters = new List<SqlParameter>();
+            parameters.Add(new SqlParameter("isSigned", action));
+            parameters.Add(new SqlParameter("ContractID", contractId));
+
+            _data.ExecuteNonQuery(AdminConstants.UpdateContract_Signed, parameters);
+        }
+
+        
+
+        public void ApplyPromo(string invoiceId, string promoId)
+        {
+            var parameters = new List<SqlParameter>();
+            parameters.Add(new SqlParameter("InvoiceID", invoiceId));
+            parameters.Add(new SqlParameter("PromoID", promoId));
+
+            _data.ExecuteNonQuery(AdminConstants.UpdateInvoice_ApplyPromo, parameters);
+        }
+
+        
+
+        public void FrameContract(bool action, int contractId, string loginId)
+        {
+            if (!action)
+            {
+                var item = GetContract_AddOn_Result(2, contractId, 0, loginId);
+                if (item.ContractId != null) DeleteContract((int) item.ContractId);
+            }
+            else
+            {
+                SaveContract(loginId, contractId, 2, 462, DateTime.Now);
+            }
+        }
+
+        public void SaveContract(string loginId, int contractId, int type, int priceLevelId, DateTime effectiveDate)
+        {
+            var parameters = new List<SqlParameter> {new SqlParameter("LoginID", loginId)};
+            if (contractId > 0)
+            {
+                parameters.Add(new SqlParameter("ParentContractID", contractId));
+            }
+
+            parameters.Add(new SqlParameter("ContractPriceLevelID", priceLevelId));
+            parameters.Add(new SqlParameter("EffectiveDate", effectiveDate));
+            _data.ExecuteNonQuery(AdminConstants.InsertContract, parameters);
+
+            // insert stripe record, default autopay to false
+            parameters = new List<SqlParameter>
+            {
+                new SqlParameter("@loginId", loginId),
+                new SqlParameter("@autoPay", false)
+            };
+            _data.ExecuteNonQuery(AdminConstants.InsertStripeAuto, parameters);
+        }
+
+        public void DeleteContract(int contractId)
+        {
+            var parameters = new List<SqlParameter>();
+            parameters.Add(new SqlParameter("ContractID", contractId));
+            _data.ExecuteNonQuery(AdminConstants.Delete_Contract, parameters);
+        }
+
+        private VmAddOnResult GetContract_AddOn_Result(int type, int contractId, int value, string loginId)
+        {
+            var parameters = new List<SqlParameter>();
+            var dataSet = new DataSet();
+            parameters.Add(new SqlParameter("LoginID", loginId));
+            parameters.Add(new SqlParameter("ContractTypeID", type));
+            parameters.Add(contractId > 0
+                ? new SqlParameter("ParentContractID", contractId)
+                : new SqlParameter("ContractID", value));
+
+            var item = _data.ExecuteWithTable(AdminConstants.GetContract_AddOn, parameters);
+            if (item != null && item.DataTable != null)
+            {
+                item.DataTable.TableName = AdminConstants.NO_OF_LOGINS_TABLE;
+                dataSet.Tables.Add(item.DataTable);
+            }
+
+            return (from DataRow row in dataSet.Tables[0].Rows select row.ToModel<VmAddOnResult>()).FirstOrDefault();
+        }
+
+        public void EmsContract(bool action, int contractId, string loginId)
+        {
+            if (!action)
+            {
+                var item = GetContract_AddOn_Result(5, contractId, 0, loginId);
+                if (item.ContractId != null) DeleteContract((int) item.ContractId);
+            }
+            else
+            {
+                SaveContract(loginId, contractId, 5, 463, DateTime.Now);
+            }
+        }
+
+        
+
+        public bool SaveContractLogin(int contractId, string loginId, bool primary)
+        {
+            var result = false;
+            if (!string.IsNullOrEmpty(loginId))
+            {
+                result = true;
+                var parameters = new List<SqlParameter>();
+                parameters.Add(new SqlParameter("ContractID", contractId));
+                parameters.Add(new SqlParameter("LoginID", loginId));
+                parameters.Add(new SqlParameter("PrimaryLogin", primary));
+                _data.ExecuteNonQuery(AdminConstants.InsertLoginContract, parameters);
+            }
+
+            return result;
+        }
+
+        public void RemoveContractLogin(int contractLoginID)
+        {
+            var parameters = new List<SqlParameter>();
+            parameters.Add(new SqlParameter("@ContractLoginID", contractLoginID));
+            _data.ExecuteNonQuery(AdminConstants.DeleteLoginContract, parameters);
+        }
+
+        public List<GetFrameDataLevelTermsLookup> GetFrameDataLevelTerms(int contractTypeID, bool priceLevelActive,
+            bool includeFreeTerms)
+        {
+            var result = new List<GetFrameDataLevelTermsLookup>();
+            var parameters = new List<SqlParameter>();
+            parameters.Add(new SqlParameter("ContractTypeID", contractTypeID));
+            parameters.Add(new SqlParameter("PriceLevelActive", priceLevelActive));
+            parameters.Add(new SqlParameter("IncludeFreeTerms", includeFreeTerms));
+
+            var item = _data.ExecuteWithTable(AdminConstants.GET_LEVEL_TERMS, parameters);
+            if (item != null && item.DataTable != null)
+            {
+                var ds = new DataSet();
+                ds.Tables.Add(item.DataTable);
+                result =
+                    (from DataRow row in ds.Tables[0].Rows select row.ToModel<GetFrameDataLevelTermsLookup>()).ToList();
+            }
+
+            return result;
+        }
+
+        public List<VmSalesRep> GetSalesRepresentatives()
+        {
+            var result = new List<VmSalesRep>();
+            var parameters = new List<SqlParameter>();
+
+            var item = _data.ExecuteWithTable(AdminConstants.GetSalesReps, parameters);
+            if (item != null && item.DataTable != null)
+            {
+                var ds = new DataSet();
+                ds.Tables.Add(item.DataTable);
+                result = (from DataRow row in ds.Tables[0].Rows select row.ToModel<VmSalesRep>()).ToList();
+            }
+
+            return result;
+        }
+
+        public void TogglePayStatus(int id, bool action, int salesRepId)
+        {
+            var parameters = new List<SqlParameter>();
+            parameters.Add(new SqlParameter("@InvoiceID", id));
+            parameters.Add(new SqlParameter("@Paid", action));
+            parameters.Add(new SqlParameter("@PaymentID", DBNull.Value));
+            _data.ExecuteNonQuery(AdminConstants.UpdateInvoice_Paid, parameters);
+
+            var parameters2 = new List<SqlParameter>();
+            parameters2.Add(new SqlParameter("@InvoiceID", id));
+            parameters2.Add(new SqlParameter("@Paid", action));
+            parameters2.Add(new SqlParameter("@LoginID", salesRepId));
+            _data.ExecuteNonQuery(AdminConstants.TrackInvoice_Paid, parameters2);
+        }
+
+        public void ToggleSubscriptionActiveStatus(int contractId, bool active)
+        {
+            var parameters = new List<SqlParameter>();
+            parameters.Add(new SqlParameter("@ContractID", contractId));
+            parameters.Add(new SqlParameter("@Active", active));
+            _data.ExecuteNonQuery(AdminConstants.UpdateContract_Active, parameters);
+        }
+
+        public void PayAllCustomInvoices(int loginId)
+        {
+            var parameters = new List<SqlParameter>();
+            parameters.Add(new SqlParameter("@LoginID", loginId));
+            _data.ExecuteNonQuery(AdminConstants.UpdateInvoice_PayAllCustomInvoices, parameters);
+        }
+
+        public void DeleteCustomInvoice(int id)
+        {
+            var parameters = new List<SqlParameter>();
+            parameters.Add(new SqlParameter("@InvoiceID", id));
+            _data.ExecuteNonQuery(AdminConstants.DeleteInvoice, parameters);
+        }
+
+        public void CreateCustomInvoices(int loginId, int numberOfPayments, decimal invoiceAmount,
+            string customPaymentDate, string notes)
+        {
+            var parameters = new List<SqlParameter>();
+            parameters.Add(new SqlParameter("@LoginID", loginId));
+            parameters.Add(new SqlParameter("@EffectiveDate", customPaymentDate));
+            parameters.Add(new SqlParameter("@NumberOfPayments", numberOfPayments));
+            parameters.Add(new SqlParameter("@InvoiceAmount", invoiceAmount));
+            parameters.Add(new SqlParameter("@Notes", notes));
+            _data.ExecuteNonQuery(AdminConstants.InsertInvoice_Custom, parameters);
+        }
+
+        public VmSalesRep UpdateSalesRep(VmSalesRep rep)
+        {
+            var result = new VmSalesRep();
+            var parameters = new List<SqlParameter>();
+            parameters.Add(new SqlParameter("@FirstName", rep.FirstName));
+            parameters.Add(new SqlParameter("@LastName", rep.LastName));
+            parameters.Add(new SqlParameter("@Email", rep.Email));
+            parameters.Add(new SqlParameter("@UserName", rep.UserName));
+            parameters.Add(new SqlParameter("@Password", rep.Password));
+            parameters.Add(new SqlParameter("@SalesRepID", rep.ID));
+
+            var item = _data.ExecuteWithTable(AdminConstants.UpdateSalesRepSql, parameters);
+            if (item != null && item.DataTable != null)
+            {
+                var ds = new DataSet();
+                ds.Tables.Add(item.DataTable);
+                result = (from DataRow row in ds.Tables[0].Rows select row.ToModel<VmSalesRep>()).FirstOrDefault();
+            }
+
+            return result;
+        }
+
+        public void UpdateSalesRepPermission(VmSalesRep rep)
+        {
+            var parameters = new List<SqlParameter>();
+            parameters.Add(new SqlParameter("@ID", rep.ID));
+            parameters.Add(new SqlParameter("pInvoiceTab", rep.InvoiceTab));
+            parameters.Add(new SqlParameter("pOrgMaintTab", rep.OrgMaintTab));
+            parameters.Add(new SqlParameter("pSalesRepMaint", rep.SalesRepMaint));
+            parameters.Add(new SqlParameter("pSalesBoard", rep.SalesBoard));
+            parameters.Add(new SqlParameter("pServerLogsTab", rep.ServerLogsTab));
+            parameters.Add(new SqlParameter("pLoginFailureTab", rep.LoginFailureTab));
+            parameters.Add(new SqlParameter("pErrorsTab", rep.ErrorsTab));
+            parameters.Add(new SqlParameter("pCurrentSessionsTab", rep.CurrentSessionsTab));
+            parameters.Add(new SqlParameter("pLinkingTab", rep.LinkingTab));
+            parameters.Add(new SqlParameter("pPaymentReport", rep.PaymentReport));
+            parameters.Add(new SqlParameter("pForcastedRevReport", rep.ForcastedRevReport));
+            parameters.Add(new SqlParameter("pRenewalReport", rep.RenewalReport));
+            parameters.Add(new SqlParameter("pRoyaltyReport", rep.RoyaltyReport));
+            parameters.Add(new SqlParameter("pExpectedRenReport", rep.ExpectedRenReport));
+            parameters.Add(new SqlParameter("pShopActivityReport", rep.ShopActivityReport));
+            parameters.Add(new SqlParameter("pWebsiteAccessReport", rep.WebsiteAccessReport));
+            parameters.Add(new SqlParameter("pUnusedContracts", rep.UnusedContracts));
+            parameters.Add(new SqlParameter("pEstimatesByShop", rep.EstimatesByShop));
+            parameters.Add(new SqlParameter("pUserMaintLoginInfo", rep.UserMaintLoginInfo));
+            parameters.Add(new SqlParameter("pUserMaintOrgInfo", rep.UserMaintOrgInfo));
+            parameters.Add(new SqlParameter("pUserMaintContactInfo", rep.UserMaintContactInfo));
+            parameters.Add(new SqlParameter("pUserMaintSalesRep", rep.UserMaintSalesRep));
+            parameters.Add(new SqlParameter("pEditPermissions", rep.EditPermissions));
+            parameters.Add(new SqlParameter("pEditBonusGoals", rep.EditBonusGoals));
+            parameters.Add(new SqlParameter("pPromoMaintenance", rep.PromoMaintenance));
+            parameters.Add(new SqlParameter("pExtensionReport", rep.ExtensionReport));
+            parameters.Add(new SqlParameter("pUserMaintImpersonate", rep.UserMaintImpersonate));
+            parameters.Add(new SqlParameter("pLoginAttempts", rep.LoginAttempts));
+            parameters.Add(new SqlParameter("pUserMaintCreate", rep.UserMaintCreate));
+            parameters.Add(new SqlParameter("pImport", rep.Import));
+            parameters.Add(new SqlParameter("pImportEst", rep.ImportEst));
+
+            _data.ExecuteNonQuery(AdminConstants.UpdateSalesRepPermissionSql, parameters);
+        }
+
+        public Dictionary<string, Dictionary<string, string>> SaveSalesReps(string action,
+            Dictionary<string, Dictionary<string, string>> data)
+        {
+            var rep = new VmSalesRep().MapFromDataTableRow(data);
+            rep = UpdateSalesRep(rep);
+            return rep.MapToDataTableRow();
+        }
+
+        public void InsertSalesRep(VmSalesRep model)
+        {
+            var parameters = new List<SqlParameter>();
+            parameters.Add(new SqlParameter("@FirstName", model.FirstName));
+            parameters.Add(new SqlParameter("@LastName", model.LastName));
+            parameters.Add(new SqlParameter("@Email", model.Email));
+            parameters.Add(new SqlParameter("@SalesNumber", model.Number));
+            _data.ExecuteNonQuery(AdminConstants.InsertSalesRepSql, parameters);
+        }
+
+        public void DeleteRep(int id)
+        {
+            var parameters = new List<SqlParameter>();
+            parameters.Add(new SqlParameter("@SalesRepID", id));
+            _data.ExecuteNonQuery(AdminConstants.DeleteSalesRep, parameters);
+        }
+
+        public VmSalesRep GetSalesRep(int id)
+        {
+            var result = new VmSalesRep();
+            var parameters = new List<SqlParameter>();
+            parameters.Add(new SqlParameter("@SalesRepID", id));
+
+            var item = _data.ExecuteWithTable(AdminConstants.GetSalesReps, parameters);
+            if (item != null && item.DataTable != null)
+            {
+                var ds = new DataSet();
+                ds.Tables.Add(item.DataTable);
+                result = (from DataRow row in ds.Tables[0].Rows select row.ToModel<VmSalesRep>()).FirstOrDefault();
+            }
+
+            return result;
+        }
+
+        public List<VmExtensionHistory> GetExtensionHistory(int loginId)
+        {
+            var result = new List<VmExtensionHistory>();
+            var parameters = new List<SqlParameter>();
+            parameters.Add(new SqlParameter("@id", loginId));
+
+            var item = _data.ExecuteWithTable(AdminConstants.GetExtensionHistorySql, parameters);
+            if (item != null && item.DataTable != null)
+            {
+                var ds = new DataSet();
+                ds.Tables.Add(item.DataTable);
+                result = (from DataRow row in ds.Tables[0].Rows select row.ToModel<VmExtensionHistory>()).ToList();
+            }
+
+            return result;
+        }
+
+        public void UpdateEstimatingDates(string effectiveDate, string expirationDate, int contractId)
+        {
+            var parameters = new List<SqlParameter>();
+            parameters.Add(new SqlParameter("@effectiveDate", effectiveDate.FormatDate()));
+            parameters.Add(new SqlParameter("@expirationDate", expirationDate.FormatDate()));
+            parameters.Add(new SqlParameter("@contractId", contractId));
+            _data.ExecuteNonQuery(AdminConstants.UpdateEstimatingDatesSql, parameters);
+        }
+
+        public void ShiftDueDates(string date, string contractId, string loginId)
+        {
+            var contract = GetInvoice(loginId, contractId);
+            var invoice = contract.Details.FirstOrDefault();
+            if (invoice != null)
+            {
+                DateTime oDate;
+                DateTime myDate;
+                if (DateTime.TryParse(invoice.DueDate, out oDate) && DateTime.TryParse(date, out myDate))
+                {
+                    var shift = (myDate - oDate).TotalDays;
+                    foreach (var item in contract.Details)
+                    {
+                        var shiftedDate =
+                            FormatExpireDate(
+                                DateTime.Parse(item.DueDate).AddDays(shift).ToString(CultureInfo.InvariantCulture));
+                        var parameters = new List<SqlParameter>();
+                        parameters.Add(new SqlParameter("@dueDate", shiftedDate));
+                        parameters.Add(new SqlParameter("@id", item.Id));
+                        _data.ExecuteNonQuery(AdminConstants.UpdateInvoiceSql, parameters);
+                    }
+                }
+            }
+        }
+
+        public Dictionary<string, Dictionary<string, string>> SaveInvoices(string action,
+            Dictionary<string, Dictionary<string, string>> data)
+        {
+            var invoice = new VmInvoiceRow().MapFromDataTableRow(data);
+            invoice = UpdateInvoice(invoice);
+            return invoice.MapToDataTableRow();
+        }
+
+        private VmInvoiceRow UpdateInvoice(VmInvoiceRow invoice)
+        {
+            var result = new VmInvoiceRow();
+            var parameters = new List<SqlParameter>();
+            parameters.Add(new SqlParameter("@id", invoice.Id));
+            parameters.Add(new SqlParameter("@Amount", invoice.Amount));
+            parameters.Add(new SqlParameter("@SalesTax", invoice.SalesTax));
+            parameters.Add(new SqlParameter("@DueDate", invoice.DueDate));
+
+            var item = _data.ExecuteWithTable(AdminConstants.UpdateSelectInvoice, parameters);
+            if (item != null && item.DataTable != null)
+            {
+                var ds = new DataSet();
+                ds.Tables.Add(item.DataTable);
+                var prelim = (from DataRow row in ds.Tables[0].Rows select row.ToModel<VmInvoiceRow>()).ToList();
+                result = prelim.FirstOrDefault(row => row.Id == invoice.Id);
+            }
+
+            return result;
+        }
+
+        public VmImport GetImporter()
+        {
+            var result = new VmImport();
+
+            return result;
+        }
+
+        private void FillEstimateIDList(int loginID)
+        {
+            var dbAccess = new DBAccess();
+            var tableResult = dbAccess.ExecuteWithTable("DataMigration_GetUnimportedEstimates",
+                new SqlParameter("LoginID", loginID));
+            if (tableResult.Success)
+            {
+                var estimateIDS = new List<int>();
+                foreach (DataRow row in tableResult.DataTable.Rows)
+                {
+                    var estimateID = InputHelper.GetInteger(row["id"].ToString());
+                    if (!estimateIDS.Contains(estimateID))
+                    {
+                        estimateIDS.Add(estimateID);
+                    }
+                }
+                var est = EstimateCollection.GetInstance;
+                est.RemoveForLogin(loginID);
+                est.AddEstimateRange(new LoginEstimate {Key = loginID, IDs = estimateIDS});
+            }
+        }
+
+        public VmImport GetLoginInfo(string loginId, string message)
+        {
+            var result = new VmImport {Message = !string.IsNullOrEmpty(message) ? message : ""};
+            int myloginId;
+            if (!string.IsNullOrEmpty(loginId) &&
+                int.TryParse(loginId, out myloginId))
+            {
+                var item = _data.ExecuteWithTable("DataMigration_GetLoginInfo", new SqlParameter("LoginID", loginId));
+                if (item.Success)
+                {
+                    if (item.DataTable != null && item.DataTable.Rows.Count > 0)
+                    {
+                        FillEstimateIDList(myloginId);
+
+                        result.LoginID = myloginId;
+                        result.LoginName = item.DataTable.Rows[0]["Organization"].ToString();
+                        result.LoginImported =
+                            InputHelper.GetBoolean(item.DataTable.Rows[0]["LoginIsImported"].ToString());
+                        result.SourceEstimates =
+                            InputHelper.GetInteger(item.DataTable.Rows[0]["EstimatesOld"].ToString());
+                        result.UnimportedEstimates = result.SourceEstimates -
+                                                     InputHelper.GetInteger(
+                                                         item.DataTable.Rows[0]["EstimatesNew"].ToString());
+
+                        if (string.IsNullOrEmpty(result.LoginName))
+                        {
+                            result.LoginName = "--Not Found--";
+                        }
+                    }
+                }
+                else
+                {
+                    result.Message = item.ErrorMessage;
+                }
+                result.LoginID = Convert.ToInt32(loginId);
+            }
+            else
+            {
+                result.Message = "Enter a valid loginID.";
+            }
+
+
+            return result;
+        }
+
+        public VmImport ImportLogin(string loginId, int salesRepID = 0)
+        {
+            var queryResult = _data.ExecuteNonQuery("DataMigration_Logins", new SqlParameter("LoginID", loginId), 0);
+            if (queryResult.Success)
+            {
+                // Log the successfull import
+                List<SqlParameter> logParams = new List<SqlParameter>();
+                logParams.Add(new SqlParameter("LoginID", loginId));
+
+                if (salesRepID > 0)
+                {
+                    logParams.Add(new SqlParameter("SalesRepID", salesRepID));
+                }
+                else
+                {
+                    logParams.Add(new SqlParameter("SelfImport", true));
+                }
+                _data.ExecuteNonQuery("LoginImportDataInsert", logParams);
+
+                return GetLoginInfo(loginId, "The login has been successfully imported");
+            }
+
+            ErrorLogger.LogError(queryResult.ErrorMessage, InputHelper.GetInteger(loginId), 0, "Login Import");
+            return GetLoginInfo(loginId, "Error importing login: " + queryResult.ErrorMessage);
+        }
+
+        public VmImport DeleteLogin(string loginId)
+        {
+            var returnMessage = "";
+
+            var queryResult = _data.ExecuteNonQuery("aaaDeleteLoginsData", new SqlParameter("LoginsID", loginId), 0);
+            if (queryResult.Success)
+            {
+                returnMessage = "Loging data deleted.";
+            }
+            else
+            {
+                returnMessage = "Error deleting login: " + queryResult.ErrorMessage;
+            }
+
+            queryResult = _data.ExecuteNonQuery("aaaaDeleteEstimates", new SqlParameter("LoginID", loginId), 0);
+            if (queryResult.Success)
+            {
+                returnMessage += Environment.NewLine + "Estimates deleted.";
+            }
+            else
+            {
+                returnMessage += Environment.NewLine + "Error deleting estimates: " + queryResult.ErrorMessage;
+            }
+
+            return GetLoginInfo(loginId, returnMessage);
+        }
+
+        public VmImportEstimate ImportContracts(string loginId, string estimateId)
+        {
+            var result = new VmImportEstimate();
+
+            var dbAccess = new DBAccess();
+            var stopwatch = new Stopwatch();
+            stopwatch.Start();
+            var contractMigrationResult = dbAccess.ExecuteNonQuery(AdminConstants.DataMigration_Contracts, new SqlParameter("LoginID", loginId), 0);
+            result.TimingMessage = "Contract imported in " + stopwatch.Elapsed;
+            if (contractMigrationResult.Success)
+            {
+                result.Success = true;
+                result.Message = "Done importing data!";
+            }
+            else
+            {
+                result.ErrorMessage = contractMigrationResult.ErrorMessage;
+            }
+
+            return result;
+        }
+
+        public VmImportEstimate ImportEstimate(string loginId, string estimateId)
+        {
+            var result = new VmImportEstimate();
+
+            var estimateIdInt = 0;
+            var loginIdInt = 0;
+
+            if (!string.IsNullOrEmpty(estimateId))
+            {
+                estimateIdInt = InputHelper.GetInteger(estimateId);
+
+                if (estimateIdInt == 0)
+                {
+                    result.ErrorMessage = "Invalid estimate ID number.";
+                }
+            }
+            else
+            {
+                if (int.TryParse(loginId, out loginIdInt) &&
+                    EstimateCollection.GetInstance.GetEstimatesForLogin(loginIdInt) != null &&
+                    EstimateCollection.GetInstance.GetEstimatesForLogin(loginIdInt).IDs.Count > 0)
+                {
+                    estimateIdInt = EstimateCollection.GetInstance.GetEstimatesForLogin(loginIdInt).IDs[0];
+                }
+                else
+                {
+                    result.ErrorMessage = "No more estimate IDs to import";
+                }
+            }
+
+            if (estimateIdInt > 0)
+            {
+                var stopwatch = new Stopwatch();
+                stopwatch.Start();
+
+                var dbAccess = new DBAccess();
+                var contractMigrationResult = dbAccess.ExecuteNonQuery(AdminConstants.DataMigration_Contracts, new SqlParameter("LoginID", loginId), 0);
+                var queryResult = dbAccess.ExecuteNonQuery(AdminConstants.DataMigration_Estimate, new SqlParameter("AdminInfoID", estimateIdInt), 0);
+
+                    var est = EstimateCollection.GetInstance;
+                    var col = est.GetEstimates(estimateIdInt);
+                    col.IDs.Remove(estimateIdInt);
+
+                    if (col.IDs.Count == 0)
+                    {
+                        dbAccess.ExecuteNonQuery(AdminConstants.Update_ConversionComplete, new List<SqlParameter>() { new SqlParameter("loginId", loginId), new SqlParameter("conversionComplete", true) }, 0);
+                        result.Message = "Conversion complete!";
+                    }
+
+                    // Return HasNextEstimate only if no estimate ID was passed.  If HasNextEstimate returns true, the next estimate will be imported, but we don't want that
+                    // to happen if a specific estimate was passed by the user.
+                    if (string.IsNullOrEmpty(estimateId) && loginIdInt > 0)
+                    {
+                        result.HasNextEstimate = est.GetEstimatesForLogin(loginIdInt) != null &&
+                                                 est.GetEstimatesForLogin(loginIdInt).IDs.Count > 0;
+                    }
+                    else
+                    {
+                        result.HasNextEstimate = false;
+                    }
+
+                    result.RemainingEstimateCount = col.IDs.Count;
+                    result.TimingMessage = "Estimate imported in " + stopwatch.Elapsed;
+                    if (queryResult.Success && contractMigrationResult.Success)
+                    {
+                        result.Success = true;
+                        result.Message = "Done importing data!";
+                    }
+                    else
+                    {
+                        result.ErrorMessage = queryResult.ErrorMessage;
+                    }
+            }
+
+            return result;
+        }
+
+        
+
+        public void CreateInvoice(int loginId, string contractId, int invoiceType, decimal invoiceAmount, string dueDate)
+        {
+            //get invoices per contract
+            //use index to determine payment number
+
+            int myContractId;
+            if (int.TryParse(contractId, out myContractId))
+            {
+                var count = GetInvoiceDetails(myContractId, loginId.ToString(), true, AddonType.FrameData).Count;
+
+                var parameters = new List<SqlParameter>();
+                parameters.Add(new SqlParameter("@LoginID", loginId));
+                parameters.Add(new SqlParameter("@contractId", contractId));
+                parameters.Add(new SqlParameter("@InvoiceTypeID", invoiceType));
+                parameters.Add(new SqlParameter("@invoiceAmount", invoiceAmount));
+                parameters.Add(new SqlParameter("@dueDate", dueDate.FormatDate()));
+                parameters.Add(new SqlParameter("@PaymentNumber", count + 1));
+                _data.ExecuteNonQuery(AdminConstants.createInvoiceSql, parameters);
+            }
+        }
+
+        public VmPaymentReport GetPaymentReportDetail(VmPaymentReport report)
+        {
+            var result = new VmPaymentReport();
+            var parameters = new List<SqlParameter>();
+            parameters.Add(new SqlParameter("@startDate", report.FromDate));
+            parameters.Add(new SqlParameter("@endDate", report.ToDate));
+
+            var cc = _data.ExecuteWithTable(AdminConstants.GetCreditCardPayments, parameters);
+            if (cc != null && cc.DataTable != null)
+            {
+                var ds = new DataSet();
+                ds.Tables.Add(cc.DataTable);
+                result.CreditCardPayments = (from DataRow row in ds.Tables[0].Rows select row.ToModel<VmCreditCardPayment>()).ToList();
+            }
+
+            var chp = _data.ExecuteWithTable(AdminConstants.GetCheckPayments, parameters);
+            if (chp != null && chp.DataTable != null)
+            {
+                var ds = new DataSet();
+                ds.Tables.Add(chp.DataTable);
+                result.CheckPayments = (from DataRow row in ds.Tables[0].Rows select row.ToModel<VmCheckPayment>()).ToList();
+            }
+
+            var ap = _data.ExecuteWithTable(AdminConstants.GetAutoPayments, parameters);
+            if (ap != null && ap.DataTable != null)
+            {
+                var ds = new DataSet();
+                ds.Tables.Add(ap.DataTable);
+                result.AutoPayments = (from DataRow row in ds.Tables[0].Rows select row.ToModel<VmAutoPayment>()).ToList();
+            }
+
+            return result;
+        }
+
+        public void ToggleAutoPay(int loginId, bool action, int contractId)
+        {
+            var parameters = new List<SqlParameter>();
+            parameters.Add(new SqlParameter("@loginId", loginId));
+            parameters.Add(new SqlParameter("@autoPay", action));
+            _data.ExecuteNonQuery(AdminConstants.InsertStripeAuto, parameters);
+            parameters = new List<SqlParameter>();
+            parameters.Add(new SqlParameter("@loginId", loginId));
+            parameters.Add(new SqlParameter("@autoPay", action));
+            _data.ExecuteNonQuery(AdminConstants.UpdateStripeAuto, parameters);
+        }
+
+        public List<VmSmsHistory> GetHistory()
+        {
+            return GetHistoryRecords();
+        }
+
+        public List<VmSmsHistory> GetHistoryByDate(DateTime fromDate, DateTime toDate)
+        {
+            return GetHistoryRecords().Where(x => DateTime.Parse(x.DateSent) >= fromDate && DateTime.Parse(x.DateSent) <= toDate.AddDays(1)).ToList();
+        }
+
+        private List<VmSmsHistory> GetHistoryRecords()
+        {
+            var result = new List<VmSmsHistory>();
+            var parameters = new List<SqlParameter>();
+
+            var item = _data.ExecuteWithTable(AdminConstants.GET_SmsHistory, parameters);
+            if (item != null && item.DataTable != null)
+            {
+                var ds = new DataSet();
+                ds.Tables.Add(item.DataTable);
+                result =
+                    (from DataRow row in ds.Tables[0].Rows select row.ToModel<VmSmsHistory>()).OrderByDescending(x => x.DateSent)
+                        .ToList();
+            }
+
+            return result;
+        }
+
+        public async Task<bool> SendAdminSms(VmSmsHistory item)
+        {
+            var result = false;
+            if (item.SalesRepId != null && item.LoginId != null)
+            {
+                //for (int i = 0; i <= 100; i++)
+                //{
+                //    Thread.Sleep(11000);
+                //    response = await _signUpService.SendNewCustomerSMSCustomMessage((int)item.SalesRepId, (int)item.LoginId, item.PhoneNumber, string.Format("{0} counter: {1}", item.Message, i)).ConfigureAwait(false);
+                //    if (!response.Success)
+                //        break;
+                //}
+                var response = await _signUpService.SendNewCustomerSMSCustomMessage((int)item.SalesRepId, (int)item.LoginId, item.PhoneNumber, string.Format("{0}", item.Message)).ConfigureAwait(false);
+                    
+                AddHistory(item);
+
+                if (response != null) result = response.Success;
+            }
+
+            return result;
+        }
+
+        public void AddHistory(VmSmsHistory item)
+        {
+            var parameters = new List<SqlParameter>();
+            parameters.Add(new SqlParameter("@PhoneNumber", item.PhoneNumber));
+            parameters.Add(new SqlParameter("@Message", item.Message));
+            parameters.Add(new SqlParameter("@SalesRepId", item.SalesRepId));
+            _data.ExecuteNonQuery(AdminConstants.Insert_SmsHistory, parameters);
+        }
+    }
+}
